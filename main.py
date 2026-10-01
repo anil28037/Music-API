@@ -1,99 +1,98 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Music API</title>
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            text-align: center;
-            margin: 50px;
-        }
-        h1 {
-            color: #333;
-        }
-        .video-container {
-            margin-top: 20px;
-            position: relative;
-            display: inline-block;
-        }
-        .mute-button {
-            position: absolute;
-            bottom: 10px;
-            left: 10px;
-            background: rgba(0, 0, 0, 0.7);
-            color: white;
-            border: none;
-            padding: 10px;
-            cursor: pointer;
-            font-size: 16px;
-            border-radius: 5px;
-        }
-        .mute-button:hover {
-            background: rgba(0, 0, 0, 0.9);
-        }
-        .subscribe-button {
-            display: inline-block;
-            margin-top: 20px;
-            padding: 10px 20px;
-            font-size: 18px;
-            color: white;
-            background-color: #ff0000;
-            text-decoration: none;
-            border-radius: 5px;
-            font-weight: bold;
-        }
-        .subscribe-button:hover {
-            background-color: #cc0000;
-        }
-    </style>
-</head>
-<body>
-    <h1>Welcome to Music API</h1>
-    <p>Use this API to get music links.</p>
+from flask import Flask, request, jsonify, send_from_directory, render_template
+from flask_cors import CORS
+import os
+import time
+import uuid
+import subprocess
+import threading
 
-    <div class="video-container">
-        <iframe id="yt-video" width="560" height="315" 
-            src="https://www.youtube.com/embed/Zn9MWd8AKFk?autoplay=1&mute=1&enablejsapi=1" 
-            title="YouTube video player" 
-            frameborder="0" 
-            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" 
-            allowfullscreen>
-        </iframe>
-        <button id="mute-btn" class="mute-button">🔇 Unmute</button>
-    </div>
+app = Flask(__name__, template_folder="templates")
+CORS(app)
 
-    <a href="https://www.youtube.com/@mirrykal?sub_confirmation=1" target="_blank" class="subscribe-button">
-        Subscribe to Mirrykal
-    </a>
+DOWNLOAD_FOLDER = "static"
+COOKIES_FILE = "cookies.txt"  # Make sure you have cookies.txt
 
-    <script>
-        var tag = document.createElement('script');
-        tag.src = "https://www.youtube.com/iframe_api";
-        var firstScriptTag = document.getElementsByTagName('script')[0];
-        firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
+if not os.path.exists(DOWNLOAD_FOLDER):
+    os.makedirs(DOWNLOAD_FOLDER)
 
-        var player;
-        function onYouTubeIframeAPIReady() {
-            player = new YT.Player('yt-video', {
-                events: {
-                    'onReady': function(event) {
-                        event.target.playVideo();
-                    }
-                }
-            });
-        }
+# Function to delete old files (older than 10 sec)
+def delete_old_files():
+    for file in os.listdir(DOWNLOAD_FOLDER):
+        file_path = os.path.join(DOWNLOAD_FOLDER, file)
+        if os.path.isfile(file_path) and time.time() - os.path.getctime(file_path) > 10:
+            os.remove(file_path)
 
-        document.getElementById('mute-btn').addEventListener('click', function() {
-            if (player.isMuted()) {
-                player.unMute();
-                this.innerText = '🔊 Mute';
-            } else {
-                player.mute();
-                this.innerText = '🔇 Unmute';
-            }
-        });
-    </script>
-</body>
-</html>
+@app.route('/')
+def home():
+    return render_template("index.html")  # Show HTML page on homepage
+
+@app.route('/download', methods=['GET'])
+def download_media():
+    video_url = request.args.get("url")
+    media_type = request.args.get("type", "audio")  # Default: Audio
+
+    if not video_url:
+        return jsonify({"error": "No URL provided"}), 400
+
+    delete_old_files()  # Clean old files
+
+    unique_filename = f"{uuid.uuid4().hex}.{'mp3' if media_type == 'audio' else 'mp4'}"
+    output_path = os.path.join(DOWNLOAD_FOLDER, unique_filename)
+
+    # YouTube download command
+    command = [
+        "yt-dlp",
+        "--output", output_path,
+        "--cookies", COOKIES_FILE,
+        video_url
+    ]
+
+    if media_type == "audio":
+        command.extend(["--extract-audio", "--audio-format", "mp3"])
+    else:
+        command.extend(["-f", "best"])  # Best video quality available
+
+    try:
+        subprocess.run(command, check=True)
+        file_url = request.host_url.rstrip('/') + f"/static/{unique_filename}"
+        return jsonify({"file_url": file_url, "message": "Download successful"})
+    except subprocess.CalledProcessError as e:
+        return jsonify({"error": str(e)}), 500
+
+# Static file serving
+@app.route('/static/<filename>')
+def serve_static(filename):
+    return send_from_directory(DOWNLOAD_FOLDER, filename)
+
+# Keep Alive Route
+@app.route('/keepalive', methods=['GET'])
+def keep_alive():
+    return "Server is alive!", 200
+
+# YouTube Channel API
+@app.route('/channel', methods=['GET'])
+def get_channel():
+    return jsonify({"channel_link": "https://m.youtube.com/mirrykal"})
+
+@app.after_request
+def add_header(response):
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    return response
+
+# Keep Alive Thread
+def run_keep_alive():
+    while True:
+        time.sleep(600)  # Ping every 10 minutes
+        try:
+            subprocess.run(["curl", "https://mirrykal.onrender.com/keepalive"], check=True)
+        except:
+            pass
+
+# Start Keep Alive in a separate thread
+threading.Thread(target=run_keep_alive, daemon=True).start()
+
+if __name__ == '__main__':
+    import os
+
+port = int(os.environ.get("SERVER_PORT", 5000))
+app.run(host="0.0.0.0", port=port)
